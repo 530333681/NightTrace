@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NightTrace · Windows 主机痕迹分析台</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="scanlines" aria-hidden="true"></div>
+<div class="vignette" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">&gt;_</span>
+    <span class="brand-name">Night<span>Trace</span></span>
+    <span class="brand-sub">read-only host artifact console</span>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="upload" aria-selected="true">
+      <span class="tab-idx">01</span> 证据包导入
+    </button>
+    <button class="tab" role="tab" data-view="processes" aria-selected="false" disabled>
+      <span class="tab-idx">02</span> Process Explorer
+    </button>
+    <button class="tab" role="tab" data-view="persistence" aria-selected="false" disabled>
+      <span class="tab-idx">03</span> Persistence
+    </button>
+  </nav>
+
+  <div class="topbar-right">
+    <span class="badge" id="sessionBadge" title="当前会话">NO SESSION</span>
+    <button class="btn ghost" id="btnNewPackage" hidden>导入新的证据包</button>
+  </div>
+</header>
+
+<main class="stage">
+
+  <!-- ================= VIEW 01 : UPLOAD ================= -->
+  <section class="view is-active" id="view-upload">
+    <div class="upload-wrap">
+      <div class="panel upload-panel">
+        <div class="panel-head">
+          <h2>导入采集包</h2>
+          <span class="hint">collector.ps1 生成的 ZIP</span>
+        </div>
+
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="选择或拖放 ZIP 文件">
+          <div class="dz-icon">&uarr;</div>
+          <div class="dz-title">拖放 ZIP 到此处，或 <span class="dz-link">点击选择文件</span></div>
+          <div class="dz-sub">不限制来源路径 · 最大 64 MB · 仅在本机浏览器与本地服务之间传输</div>
+          <input type="file" id="fileInput" accept=".zip,application/zip" hidden>
+        </div>
+
+        <div class="upload-progress" id="uploadProgress" hidden>
+          <div class="up-bar"><i id="upBarFill"></i></div>
+          <span class="up-text" id="upText">正在上传…</span>
+        </div>
+
+        <div class="alert error" id="uploadError" hidden></div>
+
+        <div class="upload-note" id="uploadNote" hidden>
+          <div class="note-head" id="noteHead"></div>
+          <ul class="note-list" id="noteList"></ul>
+        </div>
+
+        <div class="upload-meta">
+          <div class="um-item"><span>采集端</span><code>collector.ps1</code></div>
+          <div class="um-item"><span>数据格式</span><code>JSON / CSV</code></div>
+          <div class="um-item"><span>分析端</span><code>127.0.0.1:5000</code></div>
+        </div>
+      </div>
+
+      <aside class="panel side-panel">
+        <div class="panel-head"><h2>工作流</h2></div>
+        <ol class="steps">
+          <li><code>powershell -ExecutionPolicy Bypass -File .\collector.ps1</code><span>只读采集，输出带时间戳的 ZIP</span></li>
+          <li><code>python app.py</code><span>启动本地 Web 服务</span></li>
+          <li><code>http://127.0.0.1:5000</code><span>上传 ZIP，自动解析并展示</span></li>
+        </ol>
+        <div class="divider"></div>
+        <div class="panel-head"><h2>本工具的范围</h2></div>
+        <p class="muted small">
+          仅覆盖 <strong>进程</strong> 与 <strong>持久化痕迹</strong>（Run/RunOnce、计划任务、服务）。
+          不做时间线、网络连接、威胁情报与哈希信誉查询。所有高亮只是
+          <em>值得进一步查看的线索</em>，不等同于恶意结论。
+        </p>
+        <div class="legend">
+          <span class="dot warn"></span> 重点（红） <span class="dot info"></span> 线索（黄） <span class="dot ok"></span> 提示（青）
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- ================= VIEW 00 : OVERVIEW (shared stats) ================= -->
+  <section class="view" id="view-processes">
+    <div class="statbar" id="statbar-processes"></div>
+
+    <div class="panel">
+      <div class="toolbar">
+        <div class="search">
+          <span class="search-icon">/</span>
+          <input type="search" id="procSearch" placeholder="搜索进程名 / PID / 路径 / 命令行 / 用户…" autocomplete="off">
+        </div>
+        <label class="check" title="只显示带有调查线索的进程">
+          <input type="checkbox" id="procOnlyFlagged"> 仅显示线索进程
+        </label>
+        <label class="check" title="只显示缺少镜像路径的进程">
+          <input type="checkbox" id="procOnlyNoPath"> 仅缺少路径
+        </label>
+        <select id="procUserFilter" class="select"><option value="">全部账户</option></select>
+        <button class="btn ghost small" id="procReset">重置</button>
+        <span class="result-count" id="procCount"></span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="grid" id="procTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="flags">线索</th>
+              <th class="sortable" data-sort="Name">进程名</th>
+              <th class="sortable num" data-sort="ProcessId">PID</th>
+              <th class="sortable num" data-sort="ParentProcessId">PPID</th>
+              <th class="sortable" data-sort="ParentName">父进程</th>
+              <th class="sortable" data-sort="CreationDate">启动时间</th>
+              <th class="sortable" data-sort="UserName">账户</th>
+              <th class="sortable" data-sort="ExecutablePath">镜像路径</th>
+            </tr>
+          </thead>
+          <tbody id="procBody"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="procPager"></div>
+    </div>
+  </section>
+
+  <!-- ================= VIEW 02 : PERSISTENCE ================= -->
+  <section class="view" id="view-persistence">
+    <div class="statbar" id="statbar-persistence"></div>
+
+    <div class="panel">
+      <div class="toolbar">
+        <div class="search">
+          <span class="search-icon">/</span>
+          <input type="search" id="persSearch" placeholder="搜索名称 / 源位置 / 执行路径 / 账户…" autocomplete="off">
+        </div>
+        <div class="chips" id="persChips">
+          <button class="chip is-on" data-kind="">全部</button>
+          <button class="chip" data-kind="run_key">Run / RunOnce</button>
+          <button class="chip" data-kind="scheduled_task">计划任务</button>
+          <button class="chip" data-kind="service">服务</button>
+        </div>
+        <label class="check"><input type="checkbox" id="persOnlyFlagged"> 仅显示线索项</label>
+        <button class="btn ghost small" id="persReset">重置</button>
+        <span class="result-count" id="persCount"></span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="grid" id="persTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="flags">线索</th>
+              <th class="sortable" data-sort="Type">类型</th>
+              <th class="sortable" data-sort="Name">名称</th>
+              <th class="sortable" data-sort="Location">源位置</th>
+              <th class="sortable" data-sort="Target">执行路径 / 命令</th>
+              <th class="sortable" data-sort="RunAs">运行账户</th>
+              <th class="sortable" data-sort="State">状态</th>
+            </tr>
+          </thead>
+          <tbody id="persBody"></tbody>
+        </table>
+      </div>
+      <div class="pager" id="persPager"></div>
+    </div>
+  </section>
+</main>
+
+<!-- ================= DETAIL DRAWER ================= -->
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-kicker" id="drawerKicker"></div>
+      <h3 id="drawerTitle"></h3>
+    </div>
+    <button class="icon-btn" id="drawerClose" aria-label="关闭">&times;</button>
+  </div>
+  <div class="drawer-body" id="drawerBody"></div>
+</aside>
+<div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+
+<!-- ================= RAW VIEWER ================= -->
+<div class="modal" id="rawModal" hidden>
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="drawer-kicker">原始采集信息</div>
+        <h3 id="rawTitle">raw</h3>
+      </div>
+      <div class="modal-actions">
+        <select id="rawPicker" class="select dark"></select>
+        <button class="icon-btn" id="rawClose" aria-label="关闭">&times;</button>
+      </div>
+    </div>
+    <pre class="code-block" id="rawContent">加载中…</pre>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
